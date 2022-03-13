@@ -4,13 +4,49 @@ use crate::*;
 /// TODO: RENAME THIS INTO THE NEXT VERSION BEFORE RELEASE
 ///
 /// ## Fixed
+///  - Remove accidentally exposed `TryFrom<tokio::process::ChildStdin`
+///    implementation for [`ChildStdin`].
+///  - Remove accidentally exposed `TryFrom<tokio_pipe::PipeWrite>`
+///    implementation for [`ChildStdin`].
+///  - Remove accidentally exposed `TryFrom<tokio::process::ChildStdout>`
+///    implementation for [`ChildStdout`].
+///  - Remove accidentally exposed `TryFrom<tokio_pipe::PipeRead>`
+///    implementation for [`ChildStdout`].
+///  - Remove accidentally exposed `TryFrom<tokio::process::ChildStderr>`
+///    implementation for [`ChildStderr`].
+///  - Remove accidentally exposed `TryFrom<tokio_pipe::PipeRead>`
+///    implementation for [`ChildStderr`].
+#[doc(hidden)]
+/// ## Changed
+///  - Make [`Session::check`] available only on unix.
+///  - Make [`Socket::UnixSocket`] available only on unix.
+///  - Make [`SessionBuilder::control_directory`] available only on unix.
+pub mod unreleased {}
+
+/// ## Fixed
+///  - Fixed changelog entry for rc2 not being visible
+pub mod v0_9_0_rc3 {}
+
+/// ## Fixed
 ///  - Fixed crate level doc
 ///
 /// ## Added
 ///  - Added changelog
-///  - Added [`SessionBuilder::compression`]
-#[doc(hidden)]
-pub mod unreleased {}
+///  - Associated function [`SessionBuilder::compression`]
+///  - Associated function [`SessionBuilder::user_known_hosts_file`]
+///  - Associated function [`Session::control_socket`] for non-Windows platform.
+///
+/// ## Changed
+///  - Make [`ChildStdin`] an opaque type.
+///  - Make [`ChildStdout`] an opaque type.
+///  - Make [`ChildStderr`] an opaque type.
+///
+/// ## Removed
+///  - Type `Sftp`.
+///  - Type `Mode`.
+///  - Type `RemoteFile`.
+///  - Associated function `Session::sftp`.
+pub mod v0_9_0_rc2 {}
 
 /// ## Added
 ///  - Feature flag `native-mux`, an alternative backend that communicates

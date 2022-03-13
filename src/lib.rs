@@ -172,9 +172,6 @@ pub use child::RemoteChild;
 mod error;
 pub use error::Error;
 
-mod sftp;
-pub use sftp::{Mode, RemoteFile, Sftp};
-
 #[cfg(feature = "process-mux")]
 pub(crate) mod process_impl;
 
@@ -292,11 +289,15 @@ impl Session {
     }
 
     /// Check the status of the underlying SSH connection.
+    #[cfg(not(windows))]
+    #[cfg_attr(docsrs, doc(cfg(not(windows))))]
     pub async fn check(&self) -> Result<(), Error> {
         delegate!(&self.0, imp, { imp.check().await })
     }
 
     /// Get the SSH connection's control socket path.
+    #[cfg(not(windows))]
+    #[cfg_attr(docsrs, doc(cfg(not(windows))))]
     pub fn control_socket(&self) -> &Path {
         delegate!(&self.0, imp, { imp.ctl() })
     }
@@ -411,13 +412,6 @@ impl Session {
             imp.request_port_forward(forward_type, listen_socket, connect_socket)
                 .await
         })
-    }
-
-    /// Prepare to perform file operations on the remote host.
-    ///
-    /// See [`Sftp`] for details on how to interact with the remote files.
-    pub fn sftp(&self) -> Sftp<'_> {
-        Sftp::new(self)
     }
 
     /// Terminate the remote connection.

@@ -7,6 +7,7 @@ use super::process_impl;
 use super::native_mux_impl;
 
 use std::borrow::Cow;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -50,6 +51,7 @@ pub struct SessionBuilder {
     control_dir: Option<PathBuf>,
     config_file: Option<PathBuf>,
     compression: Option<bool>,
+    user_known_hosts_file: Option<Box<Path>>,
 }
 
 impl Default for SessionBuilder {
@@ -64,6 +66,7 @@ impl Default for SessionBuilder {
             control_dir: None,
             config_file: None,
             compression: None,
+            user_known_hosts_file: None,
         }
     }
 }
@@ -124,6 +127,8 @@ impl SessionBuilder {
     /// be created.
     ///
     /// If not set, `./` will be used (the current directory).
+    #[cfg(not(windows))]
+    #[cfg_attr(docsrs, doc(cfg(not(windows))))]
     pub fn control_directory(&mut self, p: impl AsRef<Path>) -> &mut Self {
         self.control_dir = Some(p.as_ref().to_path_buf());
         self
@@ -151,6 +156,18 @@ impl SessionBuilder {
     /// by default.
     pub fn compression(&mut self, compression: bool) -> &mut Self {
         self.compression = Some(compression);
+        self
+    }
+
+    /// Specify the path to the `known_hosts` file.
+    ///
+    /// The path provided may use tilde notation (`~`) to refer to the user's
+    /// home directory.
+    ///
+    /// The default is `~/.ssh/known_hosts` and `~/.ssh/known_hosts2`.
+    pub fn user_known_hosts_file(&mut self, user_known_hosts_file: impl AsRef<Path>) -> &mut Self {
+        self.user_known_hosts_file =
+            Some(user_known_hosts_file.as_ref().to_owned().into_boxed_path());
         self
     }
 
@@ -300,6 +317,12 @@ impl SessionBuilder {
             init.arg("-o").arg(format!("Compression={}", arg));
         }
 
+        if let Some(user_known_hosts_file) = &self.user_known_hosts_file {
+            let mut option: OsString = "UserKnownHostsFile=".into();
+            option.push(&**user_known_hosts_file);
+            init.arg("-o").arg(option);
+        }
+
         init.arg(destination);
 
         // we spawn and immediately wait, because the process is supposed to fork.
@@ -344,41 +367,46 @@ impl KnownHosts {
     }
 }
 
-#[test]
-fn resolve() {
-    let b = SessionBuilder::default();
-    let (b, d) = b.resolve("ssh://test-user@127.0.0.1:2222");
-    assert_eq!(b.port.as_deref(), Some("2222"));
-    assert_eq!(b.user.as_deref(), Some("test-user"));
-    assert_eq!(d, "127.0.0.1");
+#[cfg(test)]
+mod tests {
+    use super::SessionBuilder;
 
-    let b = SessionBuilder::default();
-    let (b, d) = b.resolve("ssh://test-user@opensshtest:2222");
-    assert_eq!(b.port.as_deref(), Some("2222"));
-    assert_eq!(b.user.as_deref(), Some("test-user"));
-    assert_eq!(d, "opensshtest");
+    #[test]
+    fn resolve() {
+        let b = SessionBuilder::default();
+        let (b, d) = b.resolve("ssh://test-user@127.0.0.1:2222");
+        assert_eq!(b.port.as_deref(), Some("2222"));
+        assert_eq!(b.user.as_deref(), Some("test-user"));
+        assert_eq!(d, "127.0.0.1");
 
-    let b = SessionBuilder::default();
-    let (b, d) = b.resolve("ssh://opensshtest:2222");
-    assert_eq!(b.port.as_deref(), Some("2222"));
-    assert_eq!(b.user.as_deref(), None);
-    assert_eq!(d, "opensshtest");
+        let b = SessionBuilder::default();
+        let (b, d) = b.resolve("ssh://test-user@opensshtest:2222");
+        assert_eq!(b.port.as_deref(), Some("2222"));
+        assert_eq!(b.user.as_deref(), Some("test-user"));
+        assert_eq!(d, "opensshtest");
 
-    let b = SessionBuilder::default();
-    let (b, d) = b.resolve("ssh://test-user@opensshtest");
-    assert_eq!(b.port.as_deref(), None);
-    assert_eq!(b.user.as_deref(), Some("test-user"));
-    assert_eq!(d, "opensshtest");
+        let b = SessionBuilder::default();
+        let (b, d) = b.resolve("ssh://opensshtest:2222");
+        assert_eq!(b.port.as_deref(), Some("2222"));
+        assert_eq!(b.user.as_deref(), None);
+        assert_eq!(d, "opensshtest");
 
-    let b = SessionBuilder::default();
-    let (b, d) = b.resolve("ssh://opensshtest");
-    assert_eq!(b.port.as_deref(), None);
-    assert_eq!(b.user.as_deref(), None);
-    assert_eq!(d, "opensshtest");
+        let b = SessionBuilder::default();
+        let (b, d) = b.resolve("ssh://test-user@opensshtest");
+        assert_eq!(b.port.as_deref(), None);
+        assert_eq!(b.user.as_deref(), Some("test-user"));
+        assert_eq!(d, "opensshtest");
 
-    let b = SessionBuilder::default();
-    let (b, d) = b.resolve("opensshtest");
-    assert_eq!(b.port.as_deref(), None);
-    assert_eq!(b.user.as_deref(), None);
-    assert_eq!(d, "opensshtest");
+        let b = SessionBuilder::default();
+        let (b, d) = b.resolve("ssh://opensshtest");
+        assert_eq!(b.port.as_deref(), None);
+        assert_eq!(b.user.as_deref(), None);
+        assert_eq!(d, "opensshtest");
+
+        let b = SessionBuilder::default();
+        let (b, d) = b.resolve("opensshtest");
+        assert_eq!(b.port.as_deref(), None);
+        assert_eq!(b.user.as_deref(), None);
+        assert_eq!(d, "opensshtest");
+    }
 }

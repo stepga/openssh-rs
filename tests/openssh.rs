@@ -1,9 +1,11 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::borrow::Cow;
+use std::env;
 use std::io;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -18,15 +20,25 @@ use openssh::*;
 // TODO: how do we test the connection actually _failing_ so that the master reports an error?
 
 fn addr() -> String {
-    std::env::var("TEST_HOST").unwrap_or("ssh://test-user@127.0.0.1:2222".to_string())
+    std::env::var("TEST_HOST").unwrap_or_else(|_| "ssh://test-user@127.0.0.1:2222".to_string())
 }
 
 fn loopback() -> IpAddr {
     "127.0.0.1".parse().unwrap()
 }
 
-async fn session_builder_connect(builder: SessionBuilder, addr: &str) -> Vec<Session> {
+fn get_known_hosts_path() -> PathBuf {
+    let mut path = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| "/tmp".into());
+    path.push("openssh-rs/known_hosts");
+    path
+}
+
+async fn session_builder_connect(mut builder: SessionBuilder, addr: &str) -> Vec<Session> {
     let mut sessions = Vec::with_capacity(2);
+
+    builder.user_known_hosts_file(get_known_hosts_path());
 
     #[cfg(feature = "process-mux")]
     {
@@ -44,42 +56,42 @@ async fn session_builder_connect(builder: SessionBuilder, addr: &str) -> Vec<Ses
 async fn connects() -> Vec<Session> {
     let mut sessions = Vec::with_capacity(2);
 
+    let mut builder = SessionBuilder::default();
+
+    builder
+        .user_known_hosts_file(get_known_hosts_path())
+        .known_hosts_check(KnownHosts::Accept);
+
     #[cfg(feature = "process-mux")]
     {
-        sessions.push(Session::connect(&addr(), KnownHosts::Accept).await.unwrap());
+        sessions.push(builder.connect(&addr()).await.unwrap());
     }
 
     #[cfg(feature = "native-mux")]
     {
-        sessions.push(
-            Session::connect_mux(&addr(), KnownHosts::Accept)
-                .await
-                .unwrap(),
-        );
+        sessions.push(builder.connect_mux(&addr()).await.unwrap());
     }
 
     sessions
 }
 
 async fn connects_err(host: &str) -> Vec<Error> {
+    let mut builder = SessionBuilder::default();
+
+    builder
+        .user_known_hosts_file(get_known_hosts_path())
+        .known_hosts_check(KnownHosts::Accept);
+
     let mut errors = Vec::with_capacity(2);
 
     #[cfg(feature = "process-mux")]
     {
-        errors.push(
-            Session::connect(host, KnownHosts::Accept)
-                .await
-                .unwrap_err(),
-        );
+        errors.push(builder.connect(host).await.unwrap_err());
     }
 
     #[cfg(feature = "native-mux")]
     {
-        errors.push(
-            Session::connect_mux(host, KnownHosts::Accept)
-                .await
-                .unwrap_err(),
-        );
+        errors.push(builder.connect_mux(host).await.unwrap_err());
     }
 
     errors
@@ -122,7 +134,7 @@ struct ProtoUserHostPort<'a> {
     port: Option<&'a str>,
 }
 
-fn parse_user_host_port<'a>(s: &'a str) -> Option<ProtoUserHostPort> {
+fn parse_user_host_port(s: &str) -> Option<ProtoUserHostPort> {
     lazy_static! {
         static ref SSH_REGEX: Regex = Regex::new(
             r"(?x)^((?P<proto>[[:alpha:]]+)://)?((?P<user>.*?)@)?(?P<host>.*?)(:(?P<port>\d+))?$"
@@ -130,20 +142,18 @@ fn parse_user_host_port<'a>(s: &'a str) -> Option<ProtoUserHostPort> {
         .unwrap();
     }
 
-    SSH_REGEX.captures(s).and_then(|cap| {
-        Some(ProtoUserHostPort {
-            proto: cap.name("proto").and_then(|m| Some(m.as_str())),
-            user: cap.name("user").and_then(|m| Some(m.as_str())),
-            host: cap.name("host").and_then(|m| Some(m.as_str())),
-            port: cap.name("port").and_then(|m| Some(m.as_str())),
-        })
+    SSH_REGEX.captures(s).map(|cap| ProtoUserHostPort {
+        proto: cap.name("proto").map(|m| m.as_str()),
+        user: cap.name("user").map(|m| m.as_str()),
+        host: cap.name("host").map(|m| m.as_str()),
+        port: cap.name("port").map(|m| m.as_str()),
     })
 }
 
 #[test]
 fn test_parse_proto_user_host_port() {
     let addr = "ssh://test-user@127.0.0.1:2222";
-    let parsed_addr = parse_user_host_port(&addr).unwrap();
+    let parsed_addr = parse_user_host_port(addr).unwrap();
     assert_eq!("ssh", parsed_addr.proto.unwrap());
     assert_eq!("test-user", parsed_addr.user.unwrap());
     assert_eq!("127.0.0.1", parsed_addr.host.unwrap());
@@ -153,7 +163,7 @@ fn test_parse_proto_user_host_port() {
 #[test]
 fn test_parse_user_host_port() {
     let addr = "test-user@127.0.0.1:2222";
-    let parsed_addr = parse_user_host_port(&addr).unwrap();
+    let parsed_addr = parse_user_host_port(addr).unwrap();
     assert!(parsed_addr.proto.is_none());
     assert_eq!("test-user", parsed_addr.user.unwrap());
     assert_eq!("127.0.0.1", parsed_addr.host.unwrap());
@@ -163,7 +173,7 @@ fn test_parse_user_host_port() {
 #[test]
 fn test_parse_user_host() {
     let addr = "test-user@127.0.0.1";
-    let parsed_addr = parse_user_host_port(&addr).unwrap();
+    let parsed_addr = parse_user_host_port(addr).unwrap();
     assert!(parsed_addr.proto.is_none());
     assert_eq!("test-user", parsed_addr.user.unwrap());
     assert_eq!("127.0.0.1", parsed_addr.host.unwrap());
@@ -173,7 +183,7 @@ fn test_parse_user_host() {
 #[test]
 fn test_parse_host_port() {
     let addr = "127.0.0.1:2222";
-    let parsed_addr = parse_user_host_port(&addr).unwrap();
+    let parsed_addr = parse_user_host_port(addr).unwrap();
     assert!(parsed_addr.proto.is_none());
     assert!(parsed_addr.user.is_none());
     assert_eq!("127.0.0.1", parsed_addr.host.unwrap());
@@ -183,7 +193,7 @@ fn test_parse_host_port() {
 #[test]
 fn test_parse_host() {
     let addr = "127.0.0.1";
-    let parsed_addr = parse_user_host_port(&addr).unwrap();
+    let parsed_addr = parse_user_host_port(addr).unwrap();
     assert!(parsed_addr.proto.is_none());
     assert!(parsed_addr.user.is_none());
     assert_eq!("127.0.0.1", parsed_addr.host.unwrap());
@@ -233,18 +243,20 @@ async fn config_file() {
 #[tokio::test]
 #[cfg_attr(not(ci), ignore)]
 async fn terminate_on_drop() {
+    let mut builder = SessionBuilder::default();
+
+    builder
+        .user_known_hosts_file(get_known_hosts_path())
+        .known_hosts_check(KnownHosts::Add);
+
     #[cfg(feature = "process-mux")]
     {
-        drop(Session::connect(&addr(), KnownHosts::Add).await.unwrap());
+        drop(builder.connect(&addr()).await.unwrap());
     }
 
     #[cfg(feature = "native-mux")]
     {
-        drop(
-            Session::connect_mux(&addr(), KnownHosts::Add)
-                .await
-                .unwrap(),
-        );
+        drop(builder.connect_mux(&addr()).await.unwrap());
     }
     // NOTE: how do we test that it actually killed the master here?
 }
@@ -376,141 +388,6 @@ macro_rules! assert_remote_kind {
 
 #[tokio::test]
 #[cfg_attr(not(ci), ignore)]
-async fn sftp_can() {
-    for session in connects().await {
-        let mut sftp = session.sftp();
-
-        // first, do some access checks
-        // some things we can do
-        sftp.can(Mode::Write, "test_file").await.unwrap();
-        sftp.can(Mode::Write, ".ssh/test_file").await.unwrap();
-        sftp.can(Mode::Read, ".ssh/authorized_keys").await.unwrap();
-        sftp.can(Mode::Read, "/etc/hostname").await.unwrap();
-        // some things we cannot
-        assert_remote_kind!(
-            sftp.can(Mode::Write, "/etc/passwd").await.unwrap_err(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Write, "no/such/file").await.unwrap_err(),
-            io::ErrorKind::NotFound
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Read, "/etc/shadow").await.unwrap_err(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Read, "/etc/no-such-file").await.unwrap_err(),
-            io::ErrorKind::NotFound
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Write, "/etc/no-such-file")
-                .await
-                .unwrap_err(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Write, "/no-such-file").await.unwrap_err(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Read, "no/such/file").await.unwrap_err(),
-            io::ErrorKind::NotFound
-        );
-        // and something are just weird
-        assert_remote_kind!(
-            sftp.can(Mode::Write, ".ssh").await.unwrap_err(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Write, "/etc").await.unwrap_err(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Write, "/").await.unwrap_err(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_remote_kind!(
-            sftp.can(Mode::Read, "/etc").await.unwrap_err(),
-            io::ErrorKind::Other
-        );
-
-        session.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-#[cfg_attr(not(ci), ignore)]
-async fn sftp() {
-    for session in connects().await {
-        let mut sftp = session.sftp();
-
-        // first, open a file for writing
-        let mut w = sftp.write_to("test_file").await.unwrap();
-
-        // reading from a write-only file should error
-        let failed = w.read(&mut [0]).await.unwrap_err();
-        assert_eq!(failed.kind(), io::ErrorKind::UnexpectedEof);
-
-        // write something to the file
-        w.write_all(b"hello").await.unwrap();
-        w.close().await.unwrap();
-
-        // we should still be able to write it
-        sftp.can(Mode::Write, "test_file").await.unwrap();
-        // and now also read it
-        sftp.can(Mode::Read, "test_file").await.unwrap();
-
-        // open the file again for appending
-        let mut w = sftp.append_to("test_file").await.unwrap();
-
-        // reading from an append-only file should also error
-        let failed = w.read(&mut [0]).await.unwrap_err();
-        assert_eq!(failed.kind(), io::ErrorKind::UnexpectedEof);
-
-        // append something to the file
-        w.write_all(b" world").await.unwrap();
-        w.close().await.unwrap();
-
-        // then, open the same file for reading
-        let mut r = sftp.read_from("test_file").await.unwrap();
-
-        // writing to a read-only file should error
-        let failed = r.write(&[0]).await.unwrap_err();
-        assert_eq!(failed.kind(), io::ErrorKind::WriteZero);
-
-        // read back the file
-        let mut contents = String::new();
-        r.read_to_string(&mut contents).await.unwrap();
-        assert_eq!(contents, "hello world");
-        r.close().await.unwrap();
-
-        // reading a file that does not exist should error on open
-        let failed = sftp.read_from("no/such/file").await.unwrap_err();
-        assert_remote_kind!(failed, io::ErrorKind::NotFound);
-        // so should file we're not allowed to read
-        let failed = sftp.read_from("/etc/shadow").await.unwrap_err();
-        assert_remote_kind!(failed, io::ErrorKind::PermissionDenied);
-
-        // writing a file that does not exist should also error on open
-        let failed = sftp.write_to("no/such/file").await.unwrap_err();
-        assert_remote_kind!(failed, io::ErrorKind::NotFound);
-        // so should file we're not allowed to write
-        let failed = sftp.write_to("/rootfile").await.unwrap_err();
-        assert_remote_kind!(failed, io::ErrorKind::PermissionDenied);
-
-        // writing to a full disk (or the like) should also error
-        let mut w = sftp.write_to("/dev/full").await.unwrap();
-        w.write_all(b"hello world").await.unwrap();
-        let failed = w.close().await.unwrap_err();
-        assert_remote_kind!(failed, io::ErrorKind::WriteZero);
-
-        session.close().await.unwrap();
-    }
-}
-
-#[tokio::test]
-#[cfg_attr(not(ci), ignore)]
 async fn bad_remote_command() {
     for session in connects().await {
         // a bad remote command should result in a _local_ error.
@@ -552,7 +429,8 @@ async fn connect_timeout() {
     use std::time::{Duration, Instant};
 
     let mut sb = SessionBuilder::default();
-    sb.connect_timeout(Duration::from_secs(1));
+    sb.connect_timeout(Duration::from_secs(1))
+        .user_known_hosts_file(get_known_hosts_path());
 
     let host = "192.0.0.8";
 
@@ -876,7 +754,7 @@ async fn remote_socket_forward() {
 
         const DATA: &[u8] = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n".as_bytes();
 
-        let mut buffer = [0 as u8; DATA.len()];
+        let mut buffer = [0_u8; DATA.len()];
         output.read_exact(&mut buffer).await.unwrap();
 
         assert_eq!(DATA, &buffer);
@@ -931,7 +809,7 @@ async fn local_socket_forward() {
         eprintln!("Reading");
 
         const DATA: &[u8] = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n".as_bytes();
-        let mut buffer = [0 as u8; DATA.len()];
+        let mut buffer = [0_u8; DATA.len()];
         output.read_exact(&mut buffer).await.unwrap();
 
         assert_eq!(DATA, buffer);
